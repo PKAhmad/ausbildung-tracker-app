@@ -29,7 +29,18 @@ function extractJsonArray(raw: string): unknown[] {
   return JSON.parse(text.slice(start, end + 1));
 }
 
-async function callGeminiOnce(parts: unknown[]) {
+function extractJsonObject(raw: string): Record<string, unknown> {
+  let text = raw.trim();
+  text = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error("No JSON object found in model response");
+  }
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+async function callGeminiOnce<T>(parts: unknown[], parse: (raw: string) => T) {
   const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -47,15 +58,15 @@ async function callGeminiOnce(parts: unknown[]) {
   if (typeof text !== "string") {
     throw new Error("Unexpected Gemini response shape");
   }
-  return extractJsonArray(text);
+  return parse(text);
 }
 
-async function callGemini(parts: unknown[]) {
+async function callGemini<T>(parts: unknown[], parse: (raw: string) => T) {
   const attempts = 3;
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await callGeminiOnce(parts);
+      return await callGeminiOnce(parts, parse);
     } catch (err) {
       lastErr = err;
       const status = (err as { status?: number })?.status;
@@ -93,7 +104,7 @@ Deno.serve(async (req: Request) => {
         `Translate these German/English computer-science textbook words into German, English, and Pashto. ` +
         `Give the meaning as used in computer science/IT, not everyday meaning. Words: ${words.join(", ")}. ` +
         `Return ONLY a JSON array, no markdown: [{"word":"...","de":"...","en":"...","ps":"..."}]`;
-      const result = await callGemini([{ text: prompt }]);
+      const result = await callGemini([{ text: prompt }], extractJsonArray);
       return jsonResponse(result);
     }
 
@@ -105,14 +116,22 @@ Deno.serve(async (req: Request) => {
       }
       const prompt =
         `This is a photo of a page from a German computer-science textbook. Some words are underlined by hand. ` +
+        `Also look for a page number printed on the page — textbook page numbers are usually small text in a corner ` +
+        `(top or bottom, left or right). ` +
         `Find ONLY the underlined words. For each, give its meaning in German, English, and Pashto (computer-science context), ` +
         `plus a short explanation of what it means on this page. ` +
-        `Return ONLY a JSON array, no markdown: [{"word":"...","de":"...","en":"...","ps":"...","meaning":"..."}]. If none found, return [].`;
-      const result = await callGemini([
-        { text: prompt },
-        { inline_data: { mime_type: mimeType, data: imageBase64 } },
-      ]);
-      return jsonResponse(result);
+        `Return ONLY a JSON object, no markdown: {"detectedPage":"<page number as it appears on the page, or null if not visible>",` +
+        `"words":[{"word":"...","de":"...","en":"...","ps":"...","meaning":"..."}]}. If no underlined words are found, return {"detectedPage":null or "...","words":[]}.`;
+      const result = await callGemini(
+        [
+          { text: prompt },
+          { inline_data: { mime_type: mimeType, data: imageBase64 } },
+        ],
+        extractJsonObject,
+      );
+      const words = Array.isArray(result?.words) ? result.words : [];
+      const detectedPage = result?.detectedPage ?? null;
+      return jsonResponse({ detectedPage, words });
     }
 
     return jsonResponse({ error: 'mode must be "text" or "image"' }, 400);

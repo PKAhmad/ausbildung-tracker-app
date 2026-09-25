@@ -646,6 +646,7 @@ function fileToBase64(file){
     reader.readAsDataURL(file);
   });
 }
+let imgFlow=null;
 async function handleImageInput(event){
   const file=event.target.files[0];
   event.target.value='';
@@ -655,15 +656,88 @@ async function handleImageInput(event){
   try{
     const imageBase64=await fileToBase64(file);
     const result=await callTranslateAPI({mode:'image',imageBase64,mimeType:file.type||'image/jpeg'});
-    if(!result.length){
+    const words=result.words||[];
+    if(!words.length){
       box.innerHTML=`<div class="tpreview"><div class="tp-body">Keine unterstrichenen Wörter gefunden.</div></div>`;
       return;
     }
-    lastTrans=result.map(r=>({de:r.de||r.word||'',en:r.en||'',ps:r.ps||'',kapitel:'',seite:'',bedeutung:r.meaning||''}));
-    renderTransPreview();
+    const detectedPage=result.detectedPage||null;
+    imgFlow={
+      words: words.map(r=>({de:r.de||r.word||'',en:r.en||'',ps:r.ps||'',bedeutung:r.meaning||''})),
+      seite: detectedPage!=null?String(detectedPage):'',
+      kapitel:'',
+      step: detectedPage!=null?'chapter':'page'
+    };
+    renderImgFlowStep();
   }catch(e){
     box.innerHTML=`<div class="tpreview"><div class="tp-body" style="color:var(--rose)">Bildanalyse fehlgeschlagen — ${(e.message||'Fehler').replace(/</g,'&lt;')}</div></div>`;
   }
+}
+function renderImgFlowStep(){
+  const box=document.getElementById('tPreview');
+  if(!imgFlow) return;
+  if(imgFlow.step==='page'){
+    box.innerHTML=`<div class="tpreview">
+      <div class="tp-body">Seitenzahl wurde nicht erkannt — bitte eingeben:</div>
+      <div class="field" style="margin-top:10px">
+        <input id="imgFlowSeite" placeholder="Seite" style="max-width:120px" onkeydown="if(event.key==='Enter')imgFlowSubmitPage()">
+        <button class="btn" onclick="imgFlowSubmitPage()">Weiter</button>
+      </div></div>`;
+    return;
+  }
+  if(imgFlow.step==='chapter'){
+    box.innerHTML=`<div class="tpreview">
+      <div class="tp-body">Welches Kapitel?</div>
+      <div class="field" style="margin-top:10px">
+        <select id="imgFlowKapitel">${CH.map(([n,t])=>`<option value="${n}">${String(n).padStart(2,'0')} ${t}</option>`).join('')}</select>
+        <button class="btn" onclick="imgFlowSubmitChapter()">Weiter</button>
+      </div></div>`;
+    return;
+  }
+  if(imgFlow.step==='scope'){
+    box.innerHTML=`<div class="tpreview">
+      <div class="tp-body">Für alle Wörter aus diesem Foto, oder nur für ein bestimmtes Wort?</div>
+      <div class="tp-actions" style="margin-top:10px">
+        <button class="btn" onclick="imgFlowScopeAll()">Alle Wörter</button>
+        <button class="btn ghost" onclick="imgFlowScopeOne()">Nur ein Wort</button>
+      </div></div>`;
+    return;
+  }
+  if(imgFlow.step==='pickword'){
+    box.innerHTML=`<div class="tpreview">
+      <div class="tp-body">Für welches Wort gilt Kapitel ${String(imgFlow.kapitel).padStart(2,'0')} / Seite ${imgFlow.seite}?</div>
+      <div class="field" style="margin-top:10px">
+        <select id="imgFlowWordPick">${imgFlow.words.map((w,i)=>`<option value="${i}">${(w.de||w.en||'').replace(/</g,'&lt;')}</option>`).join('')}</select>
+        <button class="btn" onclick="imgFlowSubmitWordPick()">Übernehmen</button>
+      </div></div>`;
+    return;
+  }
+}
+function imgFlowSubmitPage(){
+  const v=document.getElementById('imgFlowSeite').value.trim();
+  imgFlow.seite=v;
+  imgFlow.step='chapter';
+  renderImgFlowStep();
+}
+function imgFlowSubmitChapter(){
+  imgFlow.kapitel=document.getElementById('imgFlowKapitel').value;
+  imgFlow.step='scope';
+  renderImgFlowStep();
+}
+function imgFlowScopeAll(){
+  lastTrans=imgFlow.words.map(w=>({...w,kapitel:imgFlow.kapitel,seite:imgFlow.seite}));
+  imgFlow=null;
+  renderTransPreview();
+}
+function imgFlowScopeOne(){
+  imgFlow.step='pickword';
+  renderImgFlowStep();
+}
+function imgFlowSubmitWordPick(){
+  const idx=+document.getElementById('imgFlowWordPick').value;
+  lastTrans=imgFlow.words.map((w,i)=> i===idx ? {...w,kapitel:imgFlow.kapitel,seite:imgFlow.seite} : {...w,kapitel:'',seite:''});
+  imgFlow=null;
+  renderTransPreview();
 }
 async function saveTransAt(i){
   const t=lastTrans[i];
