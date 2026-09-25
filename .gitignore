@@ -2,3 +2,4 @@
 .agents/
 .mcp.json
 skills-lock.json
+supabase/.temp/

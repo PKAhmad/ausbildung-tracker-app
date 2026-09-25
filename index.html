@@ -353,14 +353,18 @@
   <section class="page" data-page="vocab">
     <div class="card">
       <h2>Vokabel-Tracker</h2>
-      <p class="sub">Tippe ein Wort (Deutsch oder English) → automatische Übersetzung → speichern, wenn du willst</p>
+      <p class="sub">Wort eingeben oder Buchseite fotografieren → KI-Übersetzung (DE/EN/PS) → speichern, wenn du willst</p>
       <div class="field">
         <input id="vWord" placeholder="Wort eingeben (DE oder EN)…" style="min-width:200px" onkeydown="if(event.key==='Enter')translateWord()">
         <button class="btn" onclick="translateWord()">Übersetzen</button>
       </div>
+      <div class="field">
+        <label class="btn ghost" style="cursor:pointer">📷 Foto aufnehmen<input type="file" accept="image/*" capture="environment" onchange="handleImageInput(event)" style="display:none"></label>
+        <label class="btn ghost" style="cursor:pointer">🖼️ Bild hochladen<input type="file" accept="image/*" onchange="handleImageInput(event)" style="display:none"></label>
+      </div>
       <div id="tPreview"></div>
       <table class="vocab">
-        <thead><tr><th>Deutsch</th><th>English</th><th style="text-align:right">پښتو</th><th></th></tr></thead>
+        <thead><tr><th>Deutsch</th><th>English</th><th style="text-align:right">پښتو</th><th>Kap./Seite</th><th></th></tr></thead>
         <tbody id="vocabBody"></tbody>
       </table>
     </div>
@@ -388,6 +392,7 @@
 // ⚠️ REPLACE these two with your own from supabase.com → Project Settings → API
 const SUPABASE_URL = 'https://wacqcjaxvkqrbvknlvuv.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_68zbIa54vcbFYtdKze6hsQ_ysNsQX_r';
+const TRANSLATE_URL = SUPABASE_URL + '/functions/v1/translate-vocab';
 let sb = null, user = null;
 try { if (window.supabase && !SUPABASE_URL.includes('YOUR-PROJECT')) sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY); } catch(e){}
 
@@ -584,20 +589,40 @@ async function delPractice(i){ state.practice.splice(i,1); await save('practice'
 
 function renderVocab(){
   const b=document.getElementById('vocabBody');
-  if(!state.vocab.length){ b.innerHTML='<tr><td colspan="4" class="empty">Noch keine Vokabeln gespeichert.</td></tr>'; return;}
-  b.innerHTML=state.vocab.map((v,i)=>`<tr><td class="de">${v.de}</td><td class="en">${v.en}</td>
-    <td class="ps">${v.ps}</td><td style="text-align:right"><button class="del" onclick="delVocab(${i})">✕</button></td></tr>`).join('');
+  if(!state.vocab.length){ b.innerHTML='<tr><td colspan="5" class="empty">Noch keine Vokabeln gespeichert.</td></tr>'; return;}
+  b.innerHTML=state.vocab.map((v,i)=>{
+    const loc=[v.kapitel&&('Kap. '+v.kapitel),v.seite&&('S. '+v.seite)].filter(Boolean).join(' · ')||'–';
+    return `<tr><td class="de"${v.bedeutung?` title="${v.bedeutung.replace(/"/g,'&quot;')}"`:''}>${v.de}</td><td class="en">${v.en}</td>
+    <td class="ps">${v.ps}</td><td style="font-size:12px;color:var(--ink-faint)">${loc}</td>
+    <td style="text-align:right"><button class="del" onclick="delVocab(${i})">✕</button></td></tr>`;
+  }).join('');
 }
 
-let lastTrans=null;
-async function gt(text,to){
-  // free Google translate endpoint, auto source detection, no key, CORS-enabled
-  const url=`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${to}&dt=t&q=`+encodeURIComponent(text);
-  const r=await fetch(url);
+let lastTrans=[];
+async function callTranslateAPI(payload){
+  const r=await fetch(TRANSLATE_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   const d=await r.json();
-  const out=(d[0]||[]).map(seg=>seg[0]).join('');
-  const src=d[2]||'';
-  return {text:out,src};
+  if(!r.ok || d.error) throw new Error(d.error||'Anfrage fehlgeschlagen');
+  return d;
+}
+function renderTransPreview(){
+  const box=document.getElementById('tPreview');
+  if(!lastTrans.length){ box.innerHTML=''; return; }
+  box.innerHTML=lastTrans.map((t,i)=>`<div class="tpreview">
+      <div class="tp-body">
+        <div class="tp-row"><span class="tl">Deutsch</span><span class="tv">${t.de}</span></div>
+        <div class="tp-row"><span class="tl">English</span><span class="tv en">${t.en}</span></div>
+        <div class="tp-row"><span class="tl">پښتو</span><span class="tv ps">${t.ps}</span></div>
+      </div>
+      <div class="field" style="margin-top:10px">
+        <input placeholder="Kapitel" value="${(t.kapitel||'').replace(/"/g,'&quot;')}" style="width:90px" oninput="lastTrans[${i}].kapitel=this.value">
+        <input placeholder="Seite" value="${(t.seite||'').replace(/"/g,'&quot;')}" style="width:80px" oninput="lastTrans[${i}].seite=this.value">
+        <input placeholder="Bedeutung / Notiz" value="${(t.bedeutung||'').replace(/"/g,'&quot;')}" style="min-width:160px;flex:1" oninput="lastTrans[${i}].bedeutung=this.value">
+      </div>
+      <div class="tp-actions">
+        <button class="btn" onclick="saveTransAt(${i})">Speichern</button>
+        <button class="btn ghost" onclick="dismissTransAt(${i})">Verwerfen</button>
+      </div></div>`).join('');
 }
 async function translateWord(){
   const word=document.getElementById('vWord').value.trim();
@@ -605,31 +630,51 @@ async function translateWord(){
   if(!word){ box.innerHTML=''; return; }
   box.innerHTML=`<div class="tpreview loading"><div class="tp-body"><span class="spin"></span>Übersetze „${word}“…</div></div>`;
   try{
-    const [de,en,ps]=await Promise.all([gt(word,'de'),gt(word,'en'),gt(word,'ps')]);
-    lastTrans={de:de.text,en:en.text,ps:ps.text};
-    box.innerHTML=`<div class="tpreview">
-      <div class="tp-body">
-        <div class="tp-row"><span class="tl">Deutsch</span><span class="tv">${lastTrans.de}</span></div>
-        <div class="tp-row"><span class="tl">English</span><span class="tv en">${lastTrans.en}</span></div>
-        <div class="tp-row"><span class="tl">پښتو</span><span class="tv ps">${lastTrans.ps}</span></div>
-      </div>
-      <div class="tp-actions">
-        <button class="btn" onclick="saveTrans()">Speichern</button>
-        <button class="btn ghost" onclick="clearTrans()">Verwerfen</button>
-      </div></div>`;
+    const result=await callTranslateAPI({mode:'text',words:[word]});
+    const t=result[0]||{};
+    lastTrans=[{de:t.de||word,en:t.en||'',ps:t.ps||'',kapitel:'',seite:'',bedeutung:''}];
+    renderTransPreview();
   }catch(e){
-    box.innerHTML=`<div class="tpreview"><div class="tp-body" style="color:var(--rose)">Übersetzung fehlgeschlagen — Internet prüfen und nochmal versuchen.</div></div>`;
+    box.innerHTML=`<div class="tpreview"><div class="tp-body" style="color:var(--rose)">Übersetzung fehlgeschlagen — ${(e.message||'Fehler').replace(/</g,'&lt;')}</div></div>`;
   }
 }
-async function saveTrans(){
-  if(!lastTrans) return;
-  state.vocab.unshift(lastTrans);
-  await save('vocab',state.vocab);
-  clearTrans();
-  document.getElementById('vWord').value='';
-  renderVocab(); renderDash();
+function fileToBase64(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result.split(',')[1]);
+    reader.onerror=reject;
+    reader.readAsDataURL(file);
+  });
 }
-function clearTrans(){ lastTrans=null; document.getElementById('tPreview').innerHTML=''; }
+async function handleImageInput(event){
+  const file=event.target.files[0];
+  event.target.value='';
+  if(!file) return;
+  const box=document.getElementById('tPreview');
+  box.innerHTML=`<div class="tpreview loading"><div class="tp-body"><span class="spin"></span>Bild wird analysiert…</div></div>`;
+  try{
+    const imageBase64=await fileToBase64(file);
+    const result=await callTranslateAPI({mode:'image',imageBase64,mimeType:file.type||'image/jpeg'});
+    if(!result.length){
+      box.innerHTML=`<div class="tpreview"><div class="tp-body">Keine unterstrichenen Wörter gefunden.</div></div>`;
+      return;
+    }
+    lastTrans=result.map(r=>({de:r.de||r.word||'',en:r.en||'',ps:r.ps||'',kapitel:'',seite:'',bedeutung:r.meaning||''}));
+    renderTransPreview();
+  }catch(e){
+    box.innerHTML=`<div class="tpreview"><div class="tp-body" style="color:var(--rose)">Bildanalyse fehlgeschlagen — ${(e.message||'Fehler').replace(/</g,'&lt;')}</div></div>`;
+  }
+}
+async function saveTransAt(i){
+  const t=lastTrans[i];
+  if(!t) return;
+  state.vocab.unshift({de:t.de,en:t.en,ps:t.ps,kapitel:t.kapitel||'',seite:t.seite||'',bedeutung:t.bedeutung||''});
+  await save('vocab',state.vocab);
+  lastTrans.splice(i,1);
+  const w=document.getElementById('vWord'); if(w) w.value='';
+  renderTransPreview(); renderVocab(); renderDash();
+}
+function dismissTransAt(i){ lastTrans.splice(i,1); renderTransPreview(); }
 async function delVocab(i){ state.vocab.splice(i,1); await save('vocab',state.vocab); renderVocab(); renderDash(); }
 
 function renderLog(){
