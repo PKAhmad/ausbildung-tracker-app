@@ -608,8 +608,16 @@ async function callTranslateAPI(payload){
 function renderTransPreview(){
   const box=document.getElementById('tPreview');
   if(!lastTrans.length){ box.innerHTML=''; return; }
-  box.innerHTML=lastTrans.map((t,i)=>`<div class="tpreview">
+  const isPhoto=lastTrans.some(t=>t.nr!=null);
+  const header=isPhoto?`<div class="tpreview"><div class="tp-body"><b>${lastTrans.length} Wörter gefunden</b></div>
+      <div class="tp-actions" style="margin-top:10px"><button class="btn" onclick="saveSelectedTrans()">Ausgewählte speichern</button></div></div>`:'';
+  const addRow=isPhoto?`<div class="tpreview"><div class="field">
+      <input id="photoAddWord" placeholder="+ Wort hinzufügen" style="flex:1;min-width:160px" onkeydown="if(event.key==='Enter')addPhotoWord()">
+      <button class="btn" id="photoAddBtn" onclick="addPhotoWord()">Hinzufügen</button>
+    </div><div id="photoAddMsg" style="font-size:12px;color:var(--rose);margin-top:6px"></div></div>`:'';
+  box.innerHTML=header+lastTrans.map((t,i)=>`<div class="tpreview">
       <div class="tp-body">
+        ${t.nr!=null?`<div class="tp-row"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" ${t.sel===false?'':'checked'} onchange="lastTrans[${i}].sel=this.checked">${t.nr}. ${String(t.de).replace(/</g,'&lt;')}</label></div>`:''}
         <div class="tp-row"><span class="tl">Deutsch</span><span class="tv">${t.de}</span></div>
         <div class="tp-row"><span class="tl">English</span><span class="tv en">${t.en}</span></div>
         <div class="tp-row"><span class="tl">پښتو</span><span class="tv ps">${t.ps}</span></div>
@@ -622,7 +630,36 @@ function renderTransPreview(){
       <div class="tp-actions">
         <button class="btn" onclick="saveTransAt(${i})">Speichern</button>
         <button class="btn ghost" onclick="dismissTransAt(${i})">Verwerfen</button>
-      </div></div>`).join('');
+      </div></div>`).join('')+addRow;
+}
+async function addPhotoWord(){
+  const inp=document.getElementById('photoAddWord');
+  const word=inp.value.trim();
+  if(!word) return;
+  const msgEl=document.getElementById('photoAddMsg');
+  document.getElementById('photoAddBtn').disabled=true;
+  msgEl.style.color='var(--ink-faint)'; msgEl.textContent='Übersetze…';
+  try{
+    const result=await callTranslateAPI({mode:'text',words:[word]});
+    const t=result[0]||{};
+    lastTrans.push({nr:photoNext++,de:t.de||word,en:t.en||'',ps:t.ps||'',kapitel:photoLoc.kapitel,seite:photoLoc.seite,bedeutung:''});
+    renderTransPreview();
+  }catch(e){
+    msgEl.style.color='var(--rose)'; msgEl.textContent='Übersetzung fehlgeschlagen — '+(e.message||'Fehler');
+    document.getElementById('photoAddBtn').disabled=false;
+  }
+}
+async function saveSelectedTrans(){
+  const picked=lastTrans.filter(t=>t.sel!==false);
+  if(!picked.length) return;
+  // iterate in reverse so nr 1 ends up on top after unshift
+  for(const t of picked.slice().reverse()){
+    state.vocab.unshift({de:t.de,en:t.en,ps:t.ps,kapitel:t.kapitel||'',seite:t.seite||'',bedeutung:t.bedeutung||'',...(t.nr!=null?{nr:t.nr}:{})});
+  }
+  await save('vocab',state.vocab);
+  lastTrans=lastTrans.filter(t=>t.sel===false);
+  const w=document.getElementById('vWord'); if(w) w.value='';
+  renderTransPreview(); renderVocab(); renderDash();
 }
 async function translateWord(){
   const word=document.getElementById('vWord').value.trim();
@@ -647,23 +684,107 @@ function fileToBase64(file){
   });
 }
 let imgFlow=null;
+let photoNext=1;
+let photoLoc={kapitel:'',seite:''};
+function canvasToBase64(canvas,quality){
+  return canvas.toDataURL('image/jpeg',quality).split(',')[1];
+}
+// JPEG base64 of a canvas; lowers quality if the payload is too large
+function encodeCanvas(canvas){
+  let b64='';
+  for(const q of [0.9,0.8,0.7]){
+    b64=canvasToBase64(canvas,q);
+    if(b64.length<=4.5*1024*1024) break;
+  }
+  return b64;
+}
+async function loadPhotoCanvas(file){
+  let bmp;
+  try{ bmp=await createImageBitmap(file,{imageOrientation:'from-image'}); }
+  catch(e){ bmp=await createImageBitmap(file); }
+  const scale=Math.min(1,2400/Math.max(bmp.width,bmp.height));
+  const c=document.createElement('canvas');
+  c.width=Math.round(bmp.width*scale); c.height=Math.round(bmp.height*scale);
+  c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);
+  if(bmp.close) bmp.close();
+  return c;
+}
+function cropCanvas(src,y0f,y1f){
+  const y0=Math.round(src.height*y0f), h=Math.round(src.height*y1f)-y0;
+  const c=document.createElement('canvas');
+  c.width=src.width; c.height=h;
+  c.getContext('2d').drawImage(src,0,y0,src.width,h,0,0,src.width,h);
+  return c;
+}
+function wordKey(w){
+  return String(w||'').toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,'');
+}
+function validBox(b){ return Array.isArray(b)&&b.length===4&&b.every(n=>typeof n==='number'&&isFinite(n)); }
+function sortReadingOrder(list){
+  const boxed=list.filter(w=>validBox(w.box_2d));
+  const unboxed=list.filter(w=>!validBox(w.box_2d));
+  boxed.sort((a,b)=>a.box_2d[0]-b.box_2d[0]);
+  const lines=[];
+  for(const w of boxed){
+    const ln=lines[lines.length-1];
+    if(ln && w.box_2d[0]-ln.y<12) ln.items.push(w);
+    else lines.push({y:w.box_2d[0],items:[w]});
+  }
+  const out=[];
+  for(const ln of lines){ ln.items.sort((a,b)=>a.box_2d[1]-b.box_2d[1]); out.push(...ln.items); }
+  return out.concat(unboxed);
+}
 async function handleImageInput(event){
   const file=event.target.files[0];
   event.target.value='';
   if(!file) return;
   const box=document.getElementById('tPreview');
-  box.innerHTML=`<div class="tpreview loading"><div class="tp-body"><span class="spin"></span>Bild wird analysiert…</div></div>`;
+  const progress=t=>{ box.innerHTML=`<div class="tpreview loading"><div class="tp-body"><span class="spin"></span>${t}</div></div>`; };
   try{
-    const imageBase64=await fileToBase64(file);
-    const result=await callTranslateAPI({mode:'image',imageBase64,mimeType:file.type||'image/jpeg'});
-    const words=result.words||[];
-    if(!words.length){
+    progress('1/3 Unterstrichene Wörter suchen…');
+    const canvas=await loadPhotoCanvas(file);
+    const mimeType='image/jpeg';
+    const ext=await callTranslateAPI({mode:'extract',imageBase64:encodeCanvas(canvas),mimeType});
+    const merged=[]; const seen=new Set();
+    const addWords=list=>{
+      for(const w of list||[]){
+        const k=wordKey(w.word);
+        if(!k||seen.has(k)) continue;
+        seen.add(k);
+        merged.push({word:String(w.word).trim(),context:w.context||'',box_2d:validBox(w.box_2d)?w.box_2d:null});
+      }
+    };
+    addWords(ext.words);
+    const detectedPage=ext.detectedPage||null;
+
+    progress('2/3 Auf fehlende Wörter prüfen…');
+    for(const [y0,y1] of [[0,0.55],[0.45,1]]){
+      try{
+        const part=cropCanvas(canvas,y0,y1);
+        const rc=await callTranslateAPI({mode:'recheck',imageBase64:encodeCanvas(part),mimeType,found:merged.map(w=>w.word)});
+        addWords((rc.words||[]).map(w=>({...w,box_2d:validBox(w.box_2d)
+          ?[y0*1000+w.box_2d[0]*(y1-y0),w.box_2d[1],y0*1000+w.box_2d[2]*(y1-y0),w.box_2d[3]]:null})));
+      }catch(e){ console.warn('recheck failed',e); }
+    }
+    if(!merged.length){
       box.innerHTML=`<div class="tpreview"><div class="tp-body">Keine unterstrichenen Wörter gefunden.</div></div>`;
       return;
     }
-    const detectedPage=result.detectedPage||null;
+    const ordered=sortReadingOrder(merged).map((w,i)=>({...w,nr:i+1}));
+
+    progress('3/3 Übersetzen…');
+    const words=[];
+    for(let i=0;i<ordered.length;i+=20){
+      const batch=ordered.slice(i,i+20);
+      const tr=await callTranslateAPI({mode:'translate',words:batch.map(w=>({word:w.word,context:w.context}))});
+      const res=tr.words||[];
+      batch.forEach((w,j)=>{
+        const r=(res.length===batch.length?res[j]:res.find(x=>wordKey(x.word)===wordKey(w.word)))||{};
+        words.push({nr:w.nr,de:r.de||w.word,en:r.en||'',ps:r.ps||'',bedeutung:r.meaning||''});
+      });
+    }
     imgFlow={
-      words: words.map(r=>({de:r.de||r.word||'',en:r.en||'',ps:r.ps||'',bedeutung:r.meaning||''})),
+      words,
       seite: detectedPage!=null?String(detectedPage):'',
       kapitel:'',
       step: detectedPage!=null?'chapter':'page'
@@ -726,6 +847,7 @@ function imgFlowSubmitChapter(){
 }
 function imgFlowScopeAll(){
   lastTrans=imgFlow.words.map(w=>({...w,kapitel:imgFlow.kapitel,seite:imgFlow.seite}));
+  photoNext=imgFlow.words.length+1; photoLoc={kapitel:imgFlow.kapitel,seite:imgFlow.seite};
   imgFlow=null;
   renderTransPreview();
 }
@@ -736,13 +858,14 @@ function imgFlowScopeOne(){
 function imgFlowSubmitWordPick(){
   const idx=+document.getElementById('imgFlowWordPick').value;
   lastTrans=imgFlow.words.map((w,i)=> i===idx ? {...w,kapitel:imgFlow.kapitel,seite:imgFlow.seite} : {...w,kapitel:'',seite:''});
+  photoNext=imgFlow.words.length+1; photoLoc={kapitel:imgFlow.kapitel,seite:imgFlow.seite};
   imgFlow=null;
   renderTransPreview();
 }
 async function saveTransAt(i){
   const t=lastTrans[i];
   if(!t) return;
-  state.vocab.unshift({de:t.de,en:t.en,ps:t.ps,kapitel:t.kapitel||'',seite:t.seite||'',bedeutung:t.bedeutung||''});
+  state.vocab.unshift({de:t.de,en:t.en,ps:t.ps,kapitel:t.kapitel||'',seite:t.seite||'',bedeutung:t.bedeutung||'',...(t.nr!=null?{nr:t.nr}:{})});
   await save('vocab',state.vocab);
   lastTrans.splice(i,1);
   const w=document.getElementById('vWord'); if(w) w.value='';

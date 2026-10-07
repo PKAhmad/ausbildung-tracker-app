@@ -1,4 +1,4 @@
-const CACHE = 'ausbildung-v1';
+const CACHE = 'ausbildung-v2';
 const ASSETS = [
   'index.html',
   'manifest.json',
