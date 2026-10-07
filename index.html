@@ -198,6 +198,9 @@
   .tpreview .tp-row .tv.ps{font-family:'Vazirmatn',sans-serif;direction:rtl;color:var(--amber-deep)}
   .tpreview .tp-row .tv.en{color:var(--teal)}
   .tpreview .tp-actions{display:flex;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(120,140,180,.14)}
+  .tpreview{max-width:100%;min-width:0;overflow-wrap:anywhere}
+  .tpreview .tp-row .tv{min-width:0}
+  .vocab-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;touch-action:pan-x pan-y}
   .tpreview.loading .tp-body{color:var(--ink-faint);font-size:13px}
   .spin{display:inline-block;width:14px;height:14px;border:2px solid rgba(120,140,180,.3);border-top-color:var(--amber);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:7px}
   @keyframes sp{to{transform:rotate(360deg)}}
@@ -227,6 +230,8 @@
     .vocab td,.vocab th{padding:8px 5px;font-size:12.5px}
     .tpreview .tp-actions{flex-direction:column}
     .tpreview .tp-actions .btn{width:100%}
+    .tpreview .field input,.tpreview .field select{width:100%!important;min-width:0!important;max-width:100%}
+    .vocab td,.vocab th{white-space:normal;overflow-wrap:anywhere}
   }
   @media(max-width:400px){
     .ring{width:88px;height:88px}.ring svg{width:88px;height:88px}
@@ -363,10 +368,10 @@
         <label class="btn ghost" style="cursor:pointer">🖼️ Bild hochladen<input type="file" accept="image/*" onchange="handleImageInput(event)" style="display:none"></label>
       </div>
       <div id="tPreview"></div>
-      <table class="vocab">
+      <div class="vocab-scroll"><table class="vocab">
         <thead><tr><th>Deutsch</th><th>English</th><th style="text-align:right">پښتو</th><th>Kap./Seite</th><th></th></tr></thead>
         <tbody id="vocabBody"></tbody>
-      </table>
+      </table></div>
     </div>
   </section>
 
@@ -591,7 +596,7 @@ function renderVocab(){
   const b=document.getElementById('vocabBody');
   if(!state.vocab.length){ b.innerHTML='<tr><td colspan="5" class="empty">Noch keine Vokabeln gespeichert.</td></tr>'; return;}
   b.innerHTML=state.vocab.map((v,i)=>{
-    const loc=[v.kapitel&&('Kap. '+v.kapitel),v.seite&&('S. '+v.seite)].filter(Boolean).join(' · ')||'–';
+    const loc=[v.kapitel&&('Kap. '+v.kapitel),v.seite&&('S. '+v.seite),v.nr!=null&&('Nr. '+v.nr)].filter(Boolean).join(' · ')||'–';
     return `<tr><td class="de"${v.bedeutung?` title="${v.bedeutung.replace(/"/g,'&quot;')}"`:''}>${v.de}</td><td class="en">${v.en}</td>
     <td class="ps">${v.ps}</td><td style="font-size:12px;color:var(--ink-faint)">${loc}</td>
     <td style="text-align:right"><button class="del" onclick="delVocab(${i})">✕</button></td></tr>`;
